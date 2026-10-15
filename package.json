@@ -1,0 +1,15 @@
+{
+  "name": "pi-setup",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal pi setup: codemode-first prompt, web and Zeron tools behind codemode.",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
