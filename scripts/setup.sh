@@ -10,6 +10,8 @@
 # 4. Installs the packages in PACKAGES that are missing.
 # 5. Links ~/.agents/AGENTS.md into the agent directory, if it exists. Skills in ~/.agents/skills need no link: pi reads
 #    that directory itself, and a link would load every skill twice.
+# 6. On macOS, runs dev-flows-plugin's own install script, which installs the tools its MCP servers need and skips the
+#    installed ones. It prints its own status, and needs jq, and Node.js while chrome-devtools-mcp is missing.
 #
 # macOS and Linux only. Needs curl, and git for git packages.
 #
@@ -25,7 +27,8 @@ PIBOLT="$BIN_DIR/pi-bolt"
 PI_LINK="$BIN_DIR/pi"
 PI_NPM_PACKAGE="@earendil-works/pi-coding-agent"
 # pi-web-access first: pi-setup's web-codemode.ts moves its tools behind codemode.
-PACKAGES="npm:pi-web-access git:github.com/iyazerski/pi-setup"
+PACKAGES="npm:pi-web-access git:github.com/iyazerski/pi-setup git:github.com/iyazerski/dev-flows-plugin"
+DEV_FLOWS="git:github.com/iyazerski/dev-flows-plugin"
 AGENTS_MD="$HOME/.agents/AGENTS.md"
 NL='
 '
@@ -151,14 +154,18 @@ clear_pi_executable() {
 	CHANGED=1
 }
 
+# Print where a package is installed, or nothing when it is not.
+package_path() {
+	# `pi list` prints each package's source indented by two spaces, and the path it is installed at on the next line.
+	# It reads the source from settings, so the path is checked too: settings copied from another machine list
+	# packages whose files are not here.
+	path=$(pibolt list | awk -v src="  $1" 'found { sub(/^ +/, ""); print; exit } $0 == src { found = 1 }')
+	if [ -n "$path" ] && [ -d "$path" ]; then printf '%s' "$path"; fi
+}
+
 ensure_packages() {
-	installed=$(pibolt list)
 	for source in $PACKAGES; do
-		# `pi list` prints each package's source indented by two spaces, and the path it is installed at on the next line.
-		# It reads the source from settings, so the path is checked too: settings copied from another machine list
-		# packages whose files are not here.
-		path=$(printf '%s\n' "$installed" | awk -v src="  $source" 'found { sub(/^ +/, ""); print; exit } $0 == src { found = 1 }')
-		if [ -n "$path" ] && [ -d "$path" ]; then continue; fi
+		if [ -n "$(package_path "$source")" ]; then continue; fi
 		case $source in git:*) command -v git >/dev/null 2>&1 || fail "git is needed to install $source" ;; esac
 		say "Installing $source"
 		pibolt install "$source"
@@ -181,6 +188,18 @@ ensure_agents_md() {
 	CHANGED=1
 }
 
+run_dev_flows_install() {
+	if [ "$(uname -s)" != Darwin ]; then
+		say "Skipping dev-flows-plugin's install script: it supports macOS only"
+		return 0
+	fi
+	script="$(package_path "$DEV_FLOWS")/scripts/install.sh"
+	[ -f "$script" ] || fail "dev-flows-plugin has no $script"
+	# The installed copy, so the script matches the package version pi loads.
+	say "Running $script"
+	sh "$script" || fail "dev-flows-plugin's install script failed: fix the error above and run this again"
+}
+
 [ "$(uname -s)" = Darwin ] || [ "$(uname -s)" = Linux ] || fail "only macOS and Linux are supported"
 command -v curl >/dev/null 2>&1 || fail "curl is needed"
 
@@ -190,13 +209,15 @@ ensure_pi_link
 clear_pi_executable
 ensure_packages
 ensure_agents_md
+run_dev_flows_install
 
 hash -r 2>/dev/null || true
 found=$(command -v pi || true)
 [ "$found" = "$PI_LINK" ] || say "warning: \`pi\` runs ${found:-nothing}, not $PI_LINK: put $BIN_DIR first on PATH"
 
 if [ "$CHANGED" = 0 ]; then
-	say "Everything is already set up: $("$PI_LINK" --version)"
+	# dev-flows-plugin's install script reports its own changes above.
+	say "pi is already set up: $("$PI_LINK" --version)"
 else
 	say "Done: $("$PI_LINK" --version)"
 	say "Restart apps that run pi (such as Zeron). Update with: pi update --all"
