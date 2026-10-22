@@ -119,6 +119,6 @@ Your settings, sessions, and packages in `~/.pi/agent` work with both. To also r
 | --- | --- |
 | `warning: pi runs ..., not ~/.local/bin/pi` | Put `~/.local/bin` first on `PATH`, then open a new terminal. |
 | `pi is still installed here` | That pi was installed another way, for example with Homebrew or Nix. Remove it with the tool that installed it, then run the script again. |
-| `dev-flows-plugin's install script failed` | Read the error above it. It's usually a missing `jq` or Node.js. Install it, then run the script again. |
+| `dev-flows-plugin's install script failed` | Read the error above it. It's usually a missing `jq` or Bun. Install it, then run the script again. |
 | An app still runs the old pi | Restart the app. Apps find `pi` when they start. |
 | The model still sees the web or Zeron tool schemas | Start a new session. Sessions keep the tools they started with. |

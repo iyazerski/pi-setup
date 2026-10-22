@@ -11,7 +11,7 @@
 # 5. Links ~/.agents/AGENTS.md into the agent directory, if it exists. Skills in ~/.agents/skills need no link: pi reads
 #    that directory itself, and a link would load every skill twice.
 # 6. On macOS, runs dev-flows-plugin's own install script, which installs the tools its MCP servers need and skips the
-#    installed ones. It prints its own status, and needs jq, and Node.js while chrome-devtools-mcp is missing.
+#    installed ones. It prints its own status, and needs jq and Bun.
 #
 # macOS and Linux only. Needs curl, and git for git packages.
 #
