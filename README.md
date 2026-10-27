@@ -28,6 +28,7 @@ pi lists every tool's schema in every request, and `codemode` lets the model cal
 | --- | --- | --- |
 | [`codemode-first.ts`](extensions/codemode-first.ts) | Adds a short system prompt section that steers every model to batch work into `codemode` scripts instead of chains of direct tool calls. Only added while `codemode` is active. | Tool turns and context |
 | [`web-codemode.ts`](extensions/web-codemode.ts) | Keeps [pi-web-access](https://github.com/nicobailon/pi-web-access) tools (`web_search`, `source_check`, `fetch_content`, `get_search_content`) callable from `codemode` scripts, but stops sending their schemas. Also hides the `web_enable` loader. | ~3k tokens per request |
+| [`gui-subagents.ts`](extensions/gui-subagents.ts) | Adds `computer_use` (desktop apps through [cua-driver](https://github.com/trycua/cua/tree/main/libs/cua-driver)) and `browser_use` (Chrome through [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)). Each hands its task to a subagent on `gpt-6.1-terra`, from any provider you're logged in to, that calls only its own MCP server's tools, from `codemode` scripts, and returns a short report. The main agent never sees those MCP servers, screenshots, or page snapshots. Set `PI_GUI_SUBAGENT_MODEL` and `PI_GUI_SUBAGENT_THINKING` (default `medium`) to change the model and reasoning level. | Context and cost of GUI work |
 | [`zeron-codemode.ts`](extensions/zeron-codemode.ts) | When pi runs inside [Zeron](https://zeron.sh), reconnects Zeron's agent tools as the `mcp__zeron` MCP server with `codemode` exposure, and turns off Zeron's direct `zeron_*` tools. Does nothing outside Zeron. | ~9k tokens per request |
 
 The setup script also installs these packages:
@@ -57,8 +58,9 @@ Already set up? Running the script again changes nothing and ends with `pi is al
 | 2. Remove pi | Uninstalls pi, from a managed install ([pi.dev/install.sh](https://pi.dev)) or a global npm install. Settings, logins, sessions, and packages in `~/.pi/agent` stay, and Pi-Bolt uses them as is. | No other `pi` is on `PATH` |
 | 3. Link `pi` | Links `~/.local/bin/pi` to `pi-bolt`, so anything that runs `pi` (scripts, skills, Zeron) gets Pi-Bolt. | The link exists |
 | 4. Install packages | Installs `pi-web-access`, this package, and `dev-flows-plugin`. | They are installed |
-| 5. Link `AGENTS.md` | Links `~/.agents/AGENTS.md` to `~/.pi/agent/AGENTS.md`, so pi follows your shared agent instructions. | There is no `~/.agents/AGENTS.md`, or the link exists |
-| 6. Install MCP tools (macOS) | Runs dev-flows-plugin's [install script](https://github.com/iyazerski/dev-flows-plugin#mcp-servers) for the tools behind its MCP servers. It skips installed tools and prints its own status. | Linux |
+| 5. Move GUI MCP servers | Removes `cua-driver` and `chrome-devtools` from `~/.pi/agent/mcp.json`, since `gui-subagents.ts` connects them only in its subagents. | They are not in `mcp.json` |
+| 6. Link `AGENTS.md` | Links `~/.agents/AGENTS.md` to `~/.pi/agent/AGENTS.md`, so pi follows your shared agent instructions. | There is no `~/.agents/AGENTS.md`, or the link exists |
+| 7. Install MCP tools (macOS) | Runs dev-flows-plugin's [install script](https://github.com/iyazerski/dev-flows-plugin#mcp-servers) for the tools behind its MCP servers. It skips installed tools and prints its own status. | Linux |
 
 **What it never does:**
 
@@ -92,7 +94,7 @@ pi install npm:pi-web-access
 pi install git:github.com/iyazerski/pi-setup
 ```
 
-`web-codemode.ts` needs `pi-web-access`, and does nothing without it.
+`web-codemode.ts` needs `pi-web-access`, and does nothing without it. `gui-subagents.ts` needs the `cua-driver` and `chrome-devtools-mcp` services from [dev-flows-plugin's install script](https://github.com/iyazerski/dev-flows-plugin#mcp-servers). Remove those two servers from `~/.pi/agent/mcp.json` with `pi mcp remove`, or the main agent can still reach them.
 
 ## Update
 

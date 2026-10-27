@@ -8,9 +8,11 @@
 #    Pi-Bolt uses its settings, logins, sessions and packages as is.
 # 3. Links `pi` to `pi-bolt`, so scripts, skills and apps that run `pi` (such as Zeron) get Pi-Bolt.
 # 4. Installs the packages in PACKAGES that are missing.
-# 5. Links ~/.agents/AGENTS.md into the agent directory, if it exists. Skills in ~/.agents/skills need no link: pi reads
+# 5. Removes the cua-driver and chrome-devtools MCP servers from mcp.json: pi-setup's gui-subagents.ts runs them in
+#    subagents, and the main agent must not reach them.
+# 6. Links ~/.agents/AGENTS.md into the agent directory, if it exists. Skills in ~/.agents/skills need no link: pi reads
 #    that directory itself, and a link would load every skill twice.
-# 6. On macOS, runs dev-flows-plugin's own install script, which installs the tools its MCP servers need and skips the
+# 7. On macOS, runs dev-flows-plugin's own install script, which installs the tools its MCP servers need and skips the
 #    installed ones. It prints its own status, and needs jq and Bun.
 #
 # macOS and Linux only. Needs curl, and git for git packages.
@@ -29,6 +31,8 @@ PI_NPM_PACKAGE="@earendil-works/pi-coding-agent"
 # pi-web-access first: pi-setup's web-codemode.ts moves its tools behind codemode.
 PACKAGES="npm:pi-web-access git:github.com/iyazerski/pi-setup git:github.com/iyazerski/dev-flows-plugin"
 DEV_FLOWS="git:github.com/iyazerski/dev-flows-plugin"
+# MCP servers that gui-subagents.ts connects only in its subagents.
+GUI_MCP_SERVERS="cua-driver chrome-devtools"
 AGENTS_MD="$HOME/.agents/AGENTS.md"
 NL='
 '
@@ -173,6 +177,18 @@ ensure_packages() {
 	done
 }
 
+remove_gui_mcp_servers() {
+	mcp_json="$AGENT_DIR/mcp.json"
+	[ -f "$mcp_json" ] || return 0
+	for server in $GUI_MCP_SERVERS; do
+		grep -q "\"$server\"" "$mcp_json" || continue
+		say "Removing MCP server $server from $mcp_json: gui-subagents.ts runs it in subagents"
+		# Not through pibolt(): `mcp` commands reject --no-approve. Without --local, `mcp remove` edits the user-level file.
+		"$PIBOLT" mcp remove "$server" >/dev/null
+		CHANGED=1
+	done
+}
+
 ensure_agents_md() {
 	[ -f "$AGENTS_MD" ] || return 0
 	target="$AGENT_DIR/AGENTS.md"
@@ -208,6 +224,7 @@ uninstall_pi
 ensure_pi_link
 clear_pi_executable
 ensure_packages
+remove_gui_mcp_servers
 ensure_agents_md
 run_dev_flows_install
 

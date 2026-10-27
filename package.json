@@ -2,7 +2,7 @@
   "name": "pi-setup",
   "version": "0.1.0",
   "private": true,
-  "description": "Personal pi setup: codemode-first prompt, web and Zeron tools behind codemode.",
+  "description": "Personal pi setup: codemode-first prompt, web and Zeron tools behind codemode, desktop and browser automation in subagents.",
   "type": "module",
   "keywords": ["pi-package"],
   "pi": {
