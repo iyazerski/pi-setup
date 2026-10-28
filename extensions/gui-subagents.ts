@@ -53,6 +53,11 @@ interface Role {
 	serverConfig: { command: string; args: string[] } | { url: string };
 	description: string;
 	prompt: string;
+	// `deferred` keeps a rarely used tool out of every request, schema and codemode listing alike,
+	// like the web tools: the gui_subagents prompt section names it instead.
+	exposure: "direct" | "deferred";
+	// A rule for the main agent, added to the gui_subagents prompt section while the tool is reachable.
+	mainRule?: string;
 }
 
 const ROLES: Record<string, Role> = {
@@ -66,8 +71,12 @@ const ROLES: Record<string, Role> = {
 			"It runs in the background on the user's real desktop and returns a short report: Status (done, failed, needs_input), Result, Evidence, Notes.",
 			"The subagent only sees `task`, so make it self-contained: app, exact goal, input values, and what to report back.",
 			"It keeps its state between calls in this session, so follow-ups can say 'now click Save'.",
-			"For web pages in Chrome, use browser_use. For outcomes reachable by a CLI, API, or file, use those instead.",
+			"For web pages in Chrome, use browser_use. For outcomes reachable by a CLI, API, or file, use those instead, but not UI scripting such as osascript.",
 		].join(" "),
+		exposure: "deferred",
+		// Main agents fell back to osascript, which hung on a macOS automation permission prompt.
+		mainRule:
+			"To control or inspect macOS apps, windows, or menus, use `computer_use`, not your own osascript, AppleScript, JXA, or other UI scripting: those trigger macOS permission prompts that block until the user answers.",
 		prompt: `You are a computer-use subagent on the user's macOS desktop. Another agent gave you a task. Do it with the cua-driver tools and follow their guidance: read windows narrowly by query, act by element token through run_steps, and verify at checkpoints. Call get_guide when unsure. Don't quit apps or close windows you didn't open.
 
 ${SAFETY}
@@ -86,6 +95,7 @@ ${REPORT_FORMAT}`,
 			"It keeps its state between calls in this session, so follow-ups can say 'now open the second result'.",
 			"For plain page content without interaction or login, prefer the web tools.",
 		].join(" "),
+		exposure: "direct",
 		prompt: `You are a browser subagent in the user's running Chrome. Another agent gave you a task. Do it with the chrome-devtools tools:
 - Open your own tab with new_page and pass its pageId to page tools. Never navigate or close tabs you didn't open. Close your tabs when done, unless the task says to keep them.
 - Read pages with take_snapshot (text and element uids). Take screenshots only when the layout matters, and save them to a file with filePath when the task asks for visual proof.
@@ -241,6 +251,7 @@ function setUpMain(pi: ExtensionAPI): void {
 			label: role.label,
 			description: role.description,
 			parameters: params,
+			exposure: role.exposure,
 			// Calls of one tool share a child session, so they can't run in parallel.
 			executionMode: "sequential",
 
@@ -407,13 +418,19 @@ function setUpMain(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", (event) => {
 		const active = pi.getActiveTools();
-		const tools = Object.values(ROLES).filter((role) => active.includes(role.tool));
+		// Deferred tools are reached here from codemode scripts, so only while codemode is active.
+		const reachable = (role: Role): boolean =>
+			active.includes(role.exposure === "deferred" ? "codemode" : role.tool);
+		const tools = Object.values(ROLES).filter(reachable);
 		if (tools.length === 0) return;
+		const name = (role: Role): string =>
+			role.exposure === "deferred" ? `\`tools.${role.tool}({ task })\` in \`codemode\` (${role.server})` : `\`${role.tool}\` (${role.server})`;
 		// Instructions shared across harnesses may name these MCP servers: point the model to the tools.
 		event.systemPromptOptions.sections.gui_subagents = [
-			`Desktop and browser automation run in subagents: ${tools.map((role) => `\`${role.tool}\` (${role.server})`).join(", ")}.`,
+			`Desktop and browser automation run in subagents: ${tools.map(name).join(", ")}.`,
 			"Their MCP servers aren't connected here, so call these tools instead, also when instructions name those servers.",
 			"Give each call one self-contained task. Check the reported Status and Evidence before you rely on the result.",
+			...tools.flatMap((role) => (role.mainRule ? [role.mainRule] : [])),
 		].join("\n");
 	});
 }

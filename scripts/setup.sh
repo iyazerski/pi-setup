@@ -8,14 +8,16 @@
 #    Pi-Bolt uses its settings, logins, sessions and packages as is.
 # 3. Links `pi` to `pi-bolt`, so scripts, skills and apps that run `pi` (such as Zeron) get Pi-Bolt.
 # 4. Installs the packages in PACKAGES that are missing.
-# 5. Removes the cua-driver and chrome-devtools MCP servers from mcp.json: pi-setup's gui-subagents.ts runs them in
+# 5. Sets pi-web-access's toolExposure to "deferred" and toolActivation to "none" in web-search.json, so its tools are
+#    reached only from codemode scripts and their schemas are not sent with every request. Needs jq.
+# 6. Removes the cua-driver and chrome-devtools MCP servers from mcp.json: pi-setup's gui-subagents.ts runs them in
 #    subagents, and the main agent must not reach them.
-# 6. Links ~/.agents/AGENTS.md into the agent directory, if it exists. Skills in ~/.agents/skills need no link: pi reads
+# 7. Links ~/.agents/AGENTS.md into the agent directory, if it exists. Skills in ~/.agents/skills need no link: pi reads
 #    that directory itself, and a link would load every skill twice.
-# 7. On macOS, runs dev-flows-plugin's own install script, which installs the tools its MCP servers need and skips the
+# 8. On macOS, runs dev-flows-plugin's own install script, which installs the tools its MCP servers need and skips the
 #    installed ones. It prints its own status, and needs jq and Bun.
 #
-# macOS and Linux only. Needs curl, and git for git packages.
+# macOS and Linux only. Needs curl, jq, and git for git packages.
 #
 # Environment:
 #   PIBOLT_BIN_DIR       where `pi-bolt` and the `pi` link go (default: ~/.local/bin)
@@ -28,7 +30,6 @@ AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 PIBOLT="$BIN_DIR/pi-bolt"
 PI_LINK="$BIN_DIR/pi"
 PI_NPM_PACKAGE="@earendil-works/pi-coding-agent"
-# pi-web-access first: pi-setup's web-codemode.ts moves its tools behind codemode.
 PACKAGES="npm:pi-web-access git:github.com/iyazerski/pi-setup git:github.com/iyazerski/dev-flows-plugin"
 DEV_FLOWS="git:github.com/iyazerski/dev-flows-plugin"
 # MCP servers that gui-subagents.ts connects only in its subagents.
@@ -177,6 +178,20 @@ ensure_packages() {
 	done
 }
 
+configure_web_access() {
+	config="$AGENT_DIR/web-search.json"
+	if [ -f "$config" ] && jq -e '.toolExposure == "deferred" and .toolActivation == "none"' "$config" >/dev/null; then
+		return 0
+	fi
+	say "Moving pi-web-access tools behind codemode in $config"
+	mkdir -p "$AGENT_DIR"
+	[ -f "$config" ] || printf '{}\n' >"$config"
+	updated=$(jq '. + {toolExposure: "deferred", toolActivation: "none"}' "$config") || fail "$config is not valid JSON"
+	# Write in place, not with mv, so the file keeps its permissions: it may hold API keys.
+	printf '%s\n' "$updated" >"$config"
+	CHANGED=1
+}
+
 remove_gui_mcp_servers() {
 	mcp_json="$AGENT_DIR/mcp.json"
 	[ -f "$mcp_json" ] || return 0
@@ -218,12 +233,14 @@ run_dev_flows_install() {
 
 [ "$(uname -s)" = Darwin ] || [ "$(uname -s)" = Linux ] || fail "only macOS and Linux are supported"
 command -v curl >/dev/null 2>&1 || fail "curl is needed"
+command -v jq >/dev/null 2>&1 || fail "jq is needed"
 
 ensure_pi_bolt
 uninstall_pi
 ensure_pi_link
 clear_pi_executable
 ensure_packages
+configure_web_access
 remove_gui_mcp_servers
 ensure_agents_md
 run_dev_flows_install
