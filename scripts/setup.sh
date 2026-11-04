@@ -15,10 +15,15 @@
 #    reached only from codemode scripts and their schemas are not sent with every request.
 # 7. Removes the cua-driver and chrome-devtools MCP servers from mcp.json: pi-setup's gui-subagents.ts runs them in
 #    subagents, and the main agent must not reach them.
-# 8. Links ~/.agents/AGENTS.md into the agent directory, if it exists. Skills in ~/.agents/skills need no link: pi reads
-#    that directory itself, and a link would load every skill twice.
-# 9. On macOS, runs dev-flows-plugin's own install script, which installs the tools its MCP servers need and skips the
-#    installed ones. It prints its own status.
+# 8. Sets cacheWarming to "idle" in settings.json, so pi keeps eligible prompt caches warm between runs too, and a pause
+#    of more than 5 minutes does not rewrite the whole context.
+# 9. Caps the context window of every available model at CONTEXT_WINDOW tokens in models.json, so compaction starts
+#    before requests grow past it: with a modelOverrides entry for built-in and extension models, and on the entry
+#    itself for models defined in models.json. Models with a smaller window keep it.
+# 10. Links ~/.agents/AGENTS.md into the agent directory, if it exists. Skills in ~/.agents/skills need no link: pi reads
+#     that directory itself, and a link would load every skill twice.
+# 11. On macOS, runs dev-flows-plugin's own install script, which installs the tools its MCP servers need and skips the
+#     installed ones. It prints its own status.
 #
 # macOS and Linux only. Needs Bun, jq, and git for git packages.
 #
@@ -39,6 +44,8 @@ DEV_FLOWS="git:github.com/iyazerski/dev-flows-plugin"
 # MCP servers that gui-subagents.ts connects only in its subagents.
 GUI_MCP_SERVERS="cua-driver chrome-devtools"
 AGENTS_MD="$HOME/.agents/AGENTS.md"
+# The largest context window, in tokens, any model may use.
+CONTEXT_WINDOW=250000
 NL='
 '
 CHANGED=0
@@ -173,6 +180,51 @@ configure_npm_command() {
 	CHANGED=1
 }
 
+configure_cache_warming() {
+	settings="$AGENT_DIR/settings.json"
+	if [ -f "$settings" ] && jq -e '.cacheWarming == "idle"' "$settings" >/dev/null; then return 0; fi
+	say "Setting cacheWarming to \"idle\" in $settings, so prompt caches stay warm between runs"
+	mkdir -p "$AGENT_DIR"
+	[ -f "$settings" ] || printf '{}\n' >"$settings"
+	updated=$(jq '.cacheWarming = "idle"' "$settings") || fail "$settings is not valid JSON"
+	# Write in place, not with mv, so the file keeps its permissions.
+	printf '%s\n' "$updated" >"$settings"
+	CHANGED=1
+}
+
+# Print each available model with a context window above CONTEXT_WINDOW as `provider<TAB>model`, one per line.
+models_over_context_window() {
+	# `pi --list-models` prints a table with the provider, model and context window in the first three columns, and
+	# the window rounded to thousands (`272K`) or millions (`1M`).
+	run_pi --list-models | awk -v limit="$CONTEXT_WINDOW" '
+		NR == 1 { if ($1 != "provider" || $3 != "context") exit 1; next }
+		{
+			size = $3 + 0
+			if ($3 ~ /M$/) size *= 1000000; else if ($3 ~ /K$/) size *= 1000
+			if (size > limit) printf "%s\t%s\n", $1, $2
+		}' || fail "could not read the model list from \`pi --list-models\`"
+}
+
+cap_context_windows() {
+	models=$(models_over_context_window)
+	[ -n "$models" ] || return 0
+	models_json="$AGENT_DIR/models.json"
+	say "Capping the context window at $CONTEXT_WINDOW tokens in $models_json for:$NL$(printf '%s\n' "$models" | tr '\t' /)"
+	mkdir -p "$AGENT_DIR"
+	[ -f "$models_json" ] || printf '{}\n' >"$models_json"
+	# modelOverrides applies only to built-in and extension models, so a model this file defines is changed in place.
+	updated=$(jq --arg models "$models" --argjson limit "$CONTEXT_WINDOW" '
+		reduce ($models | split("\n")[] | split("\t")) as [$provider, $id] (.;
+			if any(.providers[$provider].models[]?; .id == $id) then
+				.providers[$provider].models |= map(if .id == $id then .contextWindow = $limit else . end)
+			else
+				.providers[$provider].modelOverrides[$id].contextWindow = $limit
+			end)' "$models_json") || fail "$models_json is not valid JSON"
+	# Write in place, not with mv, so the file keeps its permissions: it may hold API keys.
+	printf '%s\n' "$updated" >"$models_json"
+	CHANGED=1
+}
+
 # Print where a package is installed, or nothing when it is not.
 package_path() {
 	# `pi list` prints each package's source indented by two spaces, and the path it is installed at on the next line.
@@ -258,6 +310,8 @@ configure_npm_command
 ensure_packages
 configure_web_access
 remove_gui_mcp_servers
+configure_cache_warming
+cap_context_windows
 ensure_agents_md
 run_dev_flows_install
 

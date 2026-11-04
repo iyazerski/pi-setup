@@ -59,8 +59,10 @@ Already set up? Running the script again changes nothing and ends with `pi is al
 | 5. Install packages | Installs `pi-web-access`, this package, and `dev-flows-plugin`. | They are installed |
 | 6. Configure pi-web-access | Sets `"toolExposure": "deferred"` and `"toolActivation": "none"` in `~/.pi/agent/web-search.json`, so the web tools are reached only from `codemode` scripts. Other settings stay. | Both are set |
 | 7. Move GUI MCP servers | Removes `cua-driver` and `chrome-devtools` from `~/.pi/agent/mcp.json`, since `gui-subagents.ts` connects them only in its subagents. | They are not in `mcp.json` |
-| 8. Link `AGENTS.md` | Links `~/.agents/AGENTS.md` to `~/.pi/agent/AGENTS.md`, so pi follows your shared agent instructions. | There is no `~/.agents/AGENTS.md`, or the link exists |
-| 9. Install MCP tools (macOS) | Runs dev-flows-plugin's [install script](https://github.com/iyazerski/dev-flows-plugin#mcp-servers) for the tools behind its MCP servers. It skips installed tools and prints its own status. | Linux |
+| 8. Warm prompt caches between runs | Sets `"cacheWarming": "idle"` in `~/.pi/agent/settings.json`, so pi keeps eligible prompt caches warm between runs too. Without it, a pause of more than 5 minutes rewrites the whole context to the cache. | It is set |
+| 9. Cap context windows | Sets the context window of every available model above 250k tokens to 250k in `~/.pi/agent/models.json`, so compaction starts before requests get that large. Built-in and extension models get a `modelOverrides` entry; models defined in `models.json` are changed in place. Models with a smaller window keep it. Run the script again after you log in to a new provider. | No available model is above 250k |
+| 10. Link `AGENTS.md` | Links `~/.agents/AGENTS.md` to `~/.pi/agent/AGENTS.md`, so pi follows your shared agent instructions. | There is no `~/.agents/AGENTS.md`, or the link exists |
+| 11. Install MCP tools (macOS) | Runs dev-flows-plugin's [install script](https://github.com/iyazerski/dev-flows-plugin#mcp-servers) for the tools behind its MCP servers. It skips installed tools and prints its own status. | Linux |
 
 **What it never does:**
 
