@@ -1,14 +1,13 @@
 # pi-setup
 
-**A lean, fast [pi](https://pi.dev) setup in one command.** Runs pi as native code and sends the model about a third of the tokens on the first request.
+**A lean [pi](https://pi.dev) setup in one command.** Sends the model about a third of the tokens on the first request.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/iyazerski/pi-setup/main/scripts/setup.sh | sh
 ```
 
 - **~65% fewer input tokens.** The first request drops from ~20k to ~7k tokens. Web and [Zeron](https://zeron.sh) tools stay available, but their schemas are no longer sent with every request.
-- **Faster and lighter pi.** Installs [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt), the same pi compiled ahead of time to native code. It starts faster and uses less CPU and memory, with the same commands, settings, and sessions.
-- **One script for every machine.** Works on a clean machine and on one that already has pi. It adds only what is missing, so it is safe to run again.
+- **One script for every machine.** Works on a clean machine and on one that already has pi or Pi-Bolt. It adds only what is missing, so it is safe to run again.
 
 ## Contents
 
@@ -17,7 +16,6 @@ curl -fsSL https://raw.githubusercontent.com/iyazerski/pi-setup/main/scripts/set
 - [What the setup script does](#what-the-setup-script-does)
 - [Install the extensions only](#install-the-extensions-only)
 - [Update](#update)
-- [Go back to pi](#go-back-to-pi)
 - [Troubleshooting](#troubleshooting)
 
 ## What's inside
@@ -38,7 +36,7 @@ The setup script also installs these packages:
 
 ## Quick start
 
-Requirements: macOS or Linux, `curl`, `jq`, and `git`.
+Requirements: macOS or Linux, `curl`, `jq`, `git`, and [Bun](https://bun.sh). pi runs on Bun, so Node.js is not needed.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/iyazerski/pi-setup/main/scripts/setup.sh | sh
@@ -54,18 +52,20 @@ Already set up? Running the script again changes nothing and ends with `pi is al
 
 | Step | What happens | Skipped when |
 | --- | --- | --- |
-| 1. Install Pi-Bolt | Installs [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt) to `~/.pi-bolt`, with `pi-bolt` in `~/.local/bin`. | `pi-bolt` is installed |
-| 2. Remove pi | Uninstalls pi, from a managed install ([pi.dev/install.sh](https://pi.dev)) or a global npm install. Settings, logins, sessions, and packages in `~/.pi/agent` stay, and Pi-Bolt uses them as is. | No other `pi` is on `PATH` |
-| 3. Link `pi` | Links `~/.local/bin/pi` to `pi-bolt`, so anything that runs `pi` (scripts, skills, Zeron) gets Pi-Bolt. | The link exists |
-| 4. Install packages | Installs `pi-web-access`, this package, and `dev-flows-plugin`. | They are installed |
-| 5. Configure pi-web-access | Sets `"toolExposure": "deferred"` and `"toolActivation": "none"` in `~/.pi/agent/web-search.json`, so the web tools are reached only from `codemode` scripts. Other settings stay. | Both are set |
-| 6. Move GUI MCP servers | Removes `cua-driver` and `chrome-devtools` from `~/.pi/agent/mcp.json`, since `gui-subagents.ts` connects them only in its subagents. | They are not in `mcp.json` |
-| 7. Link `AGENTS.md` | Links `~/.agents/AGENTS.md` to `~/.pi/agent/AGENTS.md`, so pi follows your shared agent instructions. | There is no `~/.agents/AGENTS.md`, or the link exists |
-| 8. Install MCP tools (macOS) | Runs dev-flows-plugin's [install script](https://github.com/iyazerski/dev-flows-plugin#mcp-servers) for the tools behind its MCP servers. It skips installed tools and prints its own status. | Linux |
+| 1. Install pi | Runs `bun add -g --ignore-scripts @earendil-works/pi-coding-agent`. | pi is installed with Bun |
+| 2. Write the `pi` launcher | Writes `~/.local/bin/pi`, a small script that runs pi on Bun, so anything that runs `pi` (scripts, skills, Zeron) gets it. The `pi` that Bun links in `~/.bun/bin` starts with `#!/usr/bin/env node` and doesn't run without Node.js. | The launcher is up to date |
+| 3. Remove Pi-Bolt | Uninstalls [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt), which earlier versions of this script installed in place of pi: its `pi` and `pi-bolt` links and `~/.pi-bolt`. Settings, logins, sessions, and packages in `~/.pi/agent` stay, and pi uses them as is. | Pi-Bolt is not installed |
+| 4. Use Bun for packages | Sets `"npmCommand": ["bun"]` in `~/.pi/agent/settings.json`, so pi installs and updates npm packages with Bun instead of npm. | It is set |
+| 5. Install packages | Installs `pi-web-access`, this package, and `dev-flows-plugin`. | They are installed |
+| 6. Configure pi-web-access | Sets `"toolExposure": "deferred"` and `"toolActivation": "none"` in `~/.pi/agent/web-search.json`, so the web tools are reached only from `codemode` scripts. Other settings stay. | Both are set |
+| 7. Move GUI MCP servers | Removes `cua-driver` and `chrome-devtools` from `~/.pi/agent/mcp.json`, since `gui-subagents.ts` connects them only in its subagents. | They are not in `mcp.json` |
+| 8. Link `AGENTS.md` | Links `~/.agents/AGENTS.md` to `~/.pi/agent/AGENTS.md`, so pi follows your shared agent instructions. | There is no `~/.agents/AGENTS.md`, or the link exists |
+| 9. Install MCP tools (macOS) | Runs dev-flows-plugin's [install script](https://github.com/iyazerski/dev-flows-plugin#mcp-servers) for the tools behind its MCP servers. It skips installed tools and prints its own status. | Linux |
 
 **What it never does:**
 
-- It never deletes your pi data. Only pi's program files are removed.
+- It never deletes your pi data. Only Pi-Bolt's program files are removed, after pi is installed.
+- It never replaces a `~/.local/bin/pi` it didn't write, other than Pi-Bolt's link. It stops and names it.
 - It never replaces a hand-written `~/.pi/agent/AGENTS.md`. It leaves the file and prints a warning.
 - It never removes a pi installed another way, such as Homebrew or Nix. It stops and names it, so you can remove it with that tool and run the script again.
 
@@ -76,12 +76,10 @@ You don't need to link skills: pi reads `~/.agents/skills` directly.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `PIBOLT_BIN_DIR` | `~/.local/bin` | Where `pi-bolt` and the `pi` link go |
-| `PIBOLT_VARIANT` | Installer's choice | Pi-Bolt build, for example `arm64-jit` for heavy extensions |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi's agent directory |
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/iyazerski/pi-setup/main/scripts/setup.sh | PIBOLT_VARIANT=arm64-jit sh
+curl -fsSL https://raw.githubusercontent.com/iyazerski/pi-setup/main/scripts/setup.sh | PI_CODING_AGENT_DIR=~/.pi-work/agent sh
 ```
 
 </details>
@@ -99,7 +97,7 @@ pi install git:github.com/iyazerski/pi-setup
 
 ## Update
 
-Update Pi-Bolt and every installed package:
+Update pi and every installed package:
 
 ```bash
 pi update --all
@@ -107,21 +105,13 @@ pi update --all
 
 Start a new session afterwards.
 
-## Go back to pi
-
-```bash
-rm ~/.local/bin/pi
-curl -fsSL https://pi.dev/install.sh | sh
-```
-
-Your settings, sessions, and packages in `~/.pi/agent` work with both. To also remove Pi-Bolt, run `curl -fsSL https://pi-bolt.opensec.in/install.sh | sh` and choose uninstall.
-
 ## Troubleshooting
 
 | Problem | Fix |
 | --- | --- |
-| `warning: pi runs ..., not ~/.local/bin/pi` | Put `~/.local/bin` first on `PATH`, then open a new terminal. |
-| `pi is still installed here` | That pi was installed another way, for example with Homebrew or Nix. Remove it with the tool that installed it, then run the script again. |
+| `warning: pi runs ..., not ~/.local/bin/pi` | Put `~/.local/bin` first on `PATH`, before `~/.bun/bin`, then open a new terminal. |
+| `~/.local/bin/pi is not pi-setup's launcher` | Something else installed a `pi` there. Remove it with the tool that installed it, or move it away, then run the script again. |
+| `another pi is installed here` | A second `pi` is on `PATH`, installed another way. Remove it with the tool that installed it, then run the script again. |
 | `dev-flows-plugin's install script failed` | Read the error above it. It's usually a missing `jq` or Bun. Install it, then run the script again. |
-| An app still runs the old pi | Restart the app. Apps find `pi` when they start. |
+| An app still runs the old pi or Pi-Bolt | Restart the app. Apps find `pi` when they start. |
 | The model still sees the web or Zeron tool schemas | Start a new session. Sessions keep the tools they started with. |

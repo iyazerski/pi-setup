@@ -172,7 +172,7 @@ function finalText(messages: Message[]): string {
 /** Return the command that starts another pi like this one, as the subagent example does. */
 function piInvocation(args: string[]): { command: string; args: string[] } {
 	const script = process.argv[1];
-	// A compiled pi (Bun or Pi-Bolt) has its entry point inside the executable.
+	// A compiled pi (Bun) has its entry point inside the executable.
 	if (script && !script.startsWith("/$bunfs/") && fs.existsSync(script)) {
 		return { command: process.execPath, args: [script, ...args] };
 	}

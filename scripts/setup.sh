@@ -3,33 +3,37 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/iyazerski/pi-setup/main/scripts/setup.sh | sh
 #
-# 1. Installs Pi-Bolt (https://github.com/opensec-git/Pi-Bolt), pi compiled to native code, unless `pi-bolt` is there.
-# 2. Uninstalls pi if present: a managed install (pi.dev/install.sh) or a global npm install. The agent directory stays,
-#    Pi-Bolt uses its settings, logins, sessions and packages as is.
-# 3. Links `pi` to `pi-bolt`, so scripts, skills and apps that run `pi` (such as Zeron) get Pi-Bolt.
-# 4. Installs the packages in PACKAGES that are missing.
-# 5. Sets pi-web-access's toolExposure to "deferred" and toolActivation to "none" in web-search.json, so its tools are
-#    reached only from codemode scripts and their schemas are not sent with every request. Needs jq.
-# 6. Removes the cua-driver and chrome-devtools MCP servers from mcp.json: pi-setup's gui-subagents.ts runs them in
+# 1. Installs pi with Bun (`bun add -g`), unless it is installed there.
+# 2. Writes ~/.local/bin/pi, a launcher that runs that pi on Bun. The `pi` Bun links starts with
+#    `#!/usr/bin/env node`, and does not run without Node.js.
+# 3. Uninstalls Pi-Bolt (https://github.com/opensec-git/Pi-Bolt), which earlier versions of this script installed in
+#    place of pi: its `pi` and `pi-bolt` links and its install directory. The agent directory stays, pi uses its
+#    settings, logins, sessions and packages as is.
+# 4. Sets npmCommand to ["bun"] in settings.json, so pi installs and updates npm packages with Bun instead of npm.
+# 5. Installs the packages in PACKAGES that are missing.
+# 6. Sets pi-web-access's toolExposure to "deferred" and toolActivation to "none" in web-search.json, so its tools are
+#    reached only from codemode scripts and their schemas are not sent with every request.
+# 7. Removes the cua-driver and chrome-devtools MCP servers from mcp.json: pi-setup's gui-subagents.ts runs them in
 #    subagents, and the main agent must not reach them.
-# 7. Links ~/.agents/AGENTS.md into the agent directory, if it exists. Skills in ~/.agents/skills need no link: pi reads
+# 8. Links ~/.agents/AGENTS.md into the agent directory, if it exists. Skills in ~/.agents/skills need no link: pi reads
 #    that directory itself, and a link would load every skill twice.
-# 8. On macOS, runs dev-flows-plugin's own install script, which installs the tools its MCP servers need and skips the
-#    installed ones. It prints its own status, and needs jq and Bun.
+# 9. On macOS, runs dev-flows-plugin's own install script, which installs the tools its MCP servers need and skips the
+#    installed ones. It prints its own status.
 #
-# macOS and Linux only. Needs curl, jq, and git for git packages.
+# macOS and Linux only. Needs Bun, jq, and git for git packages.
 #
 # Environment:
-#   PIBOLT_BIN_DIR       where `pi-bolt` and the `pi` link go (default: ~/.local/bin)
-#   PIBOLT_VARIANT       passed to the Pi-Bolt installer, e.g. arm64-jit (default: its own choice)
 #   PI_CODING_AGENT_DIR  pi's agent directory (default: ~/.pi/agent)
 set -eu
 
-BIN_DIR="${PIBOLT_BIN_DIR:-$HOME/.local/bin}"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
-PIBOLT="$BIN_DIR/pi-bolt"
-PI_LINK="$BIN_DIR/pi"
-PI_NPM_PACKAGE="@earendil-works/pi-coding-agent"
+PI_PACKAGE="@earendil-works/pi-coding-agent"
+# The `pi` that scripts, skills and apps (such as Zeron) run.
+PI="$HOME/.local/bin/pi"
+# The launcher's second line, which tells it apart from a `pi` this script did not write.
+LAUNCHER_MARK="# pi-setup's pi launcher: runs pi, installed with Bun, on Bun, so that it needs no Node.js."
+# Pi-Bolt's default install directory, where earlier versions of this script put it.
+PIBOLT_HOME="$HOME/.pi-bolt"
 PACKAGES="npm:pi-web-access git:github.com/iyazerski/pi-setup git:github.com/iyazerski/dev-flows-plugin"
 DEV_FLOWS="git:github.com/iyazerski/dev-flows-plugin"
 # MCP servers that gui-subagents.ts connects only in its subagents.
@@ -38,6 +42,8 @@ AGENTS_MD="$HOME/.agents/AGENTS.md"
 NL='
 '
 CHANGED=0
+# The `pi` Bun links, set by ensure_pi.
+PI_SCRIPT=""
 
 say() { printf '==> %s\n' "$1"; }
 fail() {
@@ -59,103 +65,111 @@ resolve() {
 	printf '%s/%s' "$dir" "${path##*/}"
 }
 
-# List every `pi` on PATH, in PATH order, one per line.
-pi_commands() {
+# List every command with this name on PATH, in PATH order, one per line. Broken links count too.
+commands_named() {
 	old_ifs=$IFS
 	IFS=:
 	for dir in $PATH; do
-		if [ -n "$dir" ] && { [ -x "$dir/pi" ] || [ -L "$dir/pi" ]; }; then printf '%s\n' "$dir/pi"; fi
+		if [ -n "$dir" ] && { [ -x "$dir/$1" ] || [ -L "$dir/$1" ]; }; then printf '%s\n' "$dir/$1"; fi
 	done
 	IFS=$old_ifs
 }
 
-is_pi_bolt() { "$1" --version 2>/dev/null | grep -q 'Pi-Bolt'; }
+# Whether a command is a link into Pi-Bolt's install directory, also one whose target is gone.
+is_pi_bolt_link() {
+	[ -L "$1" ] || return 1
+	# resolve() prints physical paths, so the directory is compared as one too.
+	home=$(cd -P "$PIBOLT_HOME" 2>/dev/null && pwd -P) || home=$PIBOLT_HOME
+	case $(resolve "$1") in "$home"/*) return 0 ;; esac
+	return 1
+}
 
-# Run Pi-Bolt from the home directory without project-local files, so a project's settings never leak into the setup.
-pibolt() { (cd "$HOME" && "$PIBOLT" "$@" --no-approve); }
+# Whether a file is a launcher this script wrote, of any version.
+is_launcher() { [ -f "$1" ] && [ ! -L "$1" ] && [ "$(sed -n 2p "$1")" = "$LAUNCHER_MARK" ]; }
 
-ensure_pi_bolt() {
-	if [ -x "$PIBOLT" ] && is_pi_bolt "$PIBOLT"; then return 0; fi
-	say "Installing Pi-Bolt"
-	# PIBOLT_YES=1 takes the default action without asking. OpenSec's optional extensions are left out.
-	curl -fsSL https://pi-bolt.opensec.in/install.sh | PIBOLT_YES=1 PIBOLT_EXTENSIONS=no PIBOLT_BIN_DIR="$BIN_DIR" sh
-	is_pi_bolt "$PIBOLT" || fail "Pi-Bolt did not install to $PIBOLT"
+# Run pi from the home directory without project-local files, so a project's settings never leak into the setup.
+run_pi() { (cd "$HOME" && "$PI" "$@" --no-approve); }
+
+ensure_pi() {
+	bun_bin=$(bun pm bin -g) || fail "could not find Bun's global bin directory"
+	PI_SCRIPT="$bun_bin/pi"
+	if [ -e "$PI_SCRIPT" ] && bun "$PI_SCRIPT" --version >/dev/null 2>&1; then return 0; fi
+	say "Installing $PI_PACKAGE with Bun"
+	# Like pi's own installers and `pi update`: pi needs none of its dependencies' install scripts.
+	bun add -g --ignore-scripts "$PI_PACKAGE"
+	bun "$PI_SCRIPT" --version >/dev/null 2>&1 || fail "pi did not install to $PI_SCRIPT"
 	CHANGED=1
 }
 
-# Remove a managed pi the way pi.dev/install.sh's own uninstall does: the `pi` links that point to its launcher, the
-# launcher, and the installed releases. Everything else in its agent directory stays.
-remove_managed_pi() {
-	agent=$1
-	launcher=$(resolve "$agent/bin/pi")
-	old_ifs=$IFS
-	IFS=$NL
-	for cmd in $(pi_commands); do
-		if [ -L "$cmd" ] && [ "$(resolve "$cmd")" = "$launcher" ]; then rm -f "$cmd"; fi
-	done
-	IFS=$old_ifs
-	rm -f "$agent/bin/pi"
-	rmdir "$agent/bin" 2>/dev/null || true
-	rm -rf "$agent/install"
+ensure_launcher() {
+	# Absolute paths, so it runs also where Bun's bin directory is not on PATH. `pi update` keeps both paths.
+	content="#!/bin/sh
+$LAUNCHER_MARK
+exec '$(command -v bun)' '$PI_SCRIPT' \"\$@\""
+	if is_launcher "$PI" && [ "$(cat "$PI")" = "$content" ]; then return 0; fi
+	# Replace only an older launcher or Pi-Bolt's link, never a `pi` installed another way.
+	if { [ -e "$PI" ] || [ -L "$PI" ]; } && ! is_launcher "$PI" && ! is_pi_bolt_link "$PI"; then
+		fail "$PI is not pi-setup's launcher: move it away and run this again"
+	fi
+	say "Writing the pi launcher $PI"
+	mkdir -p "${PI%/*}"
+	# Through a temporary file, so apps never start a half-written launcher.
+	printf '%s\n' "$content" >"$PI.tmp.$$"
+	chmod 755 "$PI.tmp.$$"
+	mv -f "$PI.tmp.$$" "$PI"
+	CHANGED=1
 }
 
-uninstall_pi() {
-	# Loop in this shell, not a pipe, so CHANGED survives. The list is read once, before anything is removed.
-	old_ifs=$IFS
-	IFS=$NL
-	for cmd in $(pi_commands); do
-		IFS=$old_ifs
-		[ -e "$cmd" ] || [ -L "$cmd" ] || continue # removed with an earlier entry
-		if [ ! -e "$cmd" ]; then
-			# A link whose target is gone, e.g. left by an interrupted uninstall.
-			say "Removing broken link $cmd"
-			rm -f "$cmd"
-			CHANGED=1
-			continue
-		fi
-		if is_pi_bolt "$cmd"; then continue; fi
-		real=$(resolve "$cmd")
-		bin=${real%/*}
-		agent=${bin%/*}
-		# A managed install keeps its launcher in <agent>/bin/pi and its releases in <agent>/install.
-		if [ "${real##*/}" = pi ] && [ "${bin##*/}" = bin ] && [ -f "$agent/install/managed-install.json" ]; then
-			say "Uninstalling managed pi from $agent/install (keeping the rest of $agent)"
-			remove_managed_pi "$agent"
-			CHANGED=1
-		elif command -v npm >/dev/null 2>&1 && npm ls -g --depth=0 "$PI_NPM_PACKAGE" >/dev/null 2>&1; then
-			say "Uninstalling pi with npm ($PI_NPM_PACKAGE)"
-			npm uninstall -g "$PI_NPM_PACKAGE"
-			CHANGED=1
-		fi
-	done
-	IFS=$old_ifs
-	hash -r 2>/dev/null || true
-	# Anything left was installed some other way (Homebrew, Nix, a copy): stop before the `pi` link hides or fights it.
+# Every other `pi` on PATH would run in place of the launcher wherever PATH is ordered differently, as in apps. The one
+# Bun links is the launcher's, and fails only when it is run without it.
+check_other_pis() {
+	script=$(resolve "$PI_SCRIPT")
 	left=""
+	old_ifs=$IFS
 	IFS=$NL
-	for cmd in $(pi_commands); do
-		if ! is_pi_bolt "$cmd"; then left="$left  $cmd$NL"; fi
+	for cmd in $(commands_named pi); do
+		if [ "$cmd" != "$PI" ] && [ "$(resolve "$cmd")" != "$script" ]; then left="$left  $cmd$NL"; fi
 	done
 	IFS=$old_ifs
-	[ -z "$left" ] || fail "pi is still installed here, remove it with the tool that installed it and run this again:$NL$left"
+	[ -z "$left" ] || fail "another pi is installed here, remove it with the tool that installed it and run this again:$NL$left"
 }
 
-ensure_pi_link() {
-	# Any link that ends at Pi-Bolt's executable is fine, also one made by hand straight to it.
-	if [ -L "$PI_LINK" ] && [ "$(resolve "$PI_LINK")" = "$(resolve "$PIBOLT")" ]; then return 0; fi
-	if [ -e "$PI_LINK" ] && [ ! -L "$PI_LINK" ]; then fail "$PI_LINK is a file, not a link: move it away and run this again"; fi
-	# Link to the `pi-bolt` command, not to the executable behind it, so reinstalls and updates of Pi-Bolt keep working.
-	say "Linking $PI_LINK -> $PIBOLT"
-	ln -sfn "$PIBOLT" "$PI_LINK"
+remove_pi_bolt() {
+	links=""
+	old_ifs=$IFS
+	IFS=$NL
+	# Pi-Bolt links its `pi-bolt` command into ~/.local/bin by default, also when that is not on PATH.
+	for cmd in $(commands_named pi) $(commands_named pi-bolt) "$HOME/.local/bin/pi-bolt"; do
+		if is_pi_bolt_link "$cmd"; then links="$links$cmd$NL"; fi
+	done
+	IFS=$old_ifs
+	if [ -z "$links" ] && [ ! -e "$PIBOLT_HOME" ]; then return 0; fi
+	say "Uninstalling Pi-Bolt from $PIBOLT_HOME (keeping $AGENT_DIR)"
+	IFS=$NL
+	for cmd in $links; do rm -f "$cmd"; done
+	IFS=$old_ifs
+	rm -rf "$PIBOLT_HOME"
 	CHANGED=1
 }
 
 clear_pi_executable() {
-	# An override left from trying Pi-Bolt in a desktop app (Zeron reads it) would outlive this setup.
+	# An override of the `pi` that desktop apps run (Zeron reads it) would outlive this setup.
 	[ "$(uname -s)" = Darwin ] || return 0
 	[ -n "$(launchctl getenv PI_EXECUTABLE 2>/dev/null)" ] || return 0
 	say "Clearing PI_EXECUTABLE from launchctl"
 	launchctl unsetenv PI_EXECUTABLE
+	CHANGED=1
+}
+
+configure_npm_command() {
+	settings="$AGENT_DIR/settings.json"
+	if [ -f "$settings" ] && jq -e '.npmCommand == ["bun"]' "$settings" >/dev/null; then return 0; fi
+	say "Setting npmCommand to [\"bun\"] in $settings, so pi installs npm packages with Bun"
+	mkdir -p "$AGENT_DIR"
+	[ -f "$settings" ] || printf '{}\n' >"$settings"
+	updated=$(jq '.npmCommand = ["bun"]' "$settings") || fail "$settings is not valid JSON"
+	# Write in place, not with mv, so the file keeps its permissions.
+	printf '%s\n' "$updated" >"$settings"
 	CHANGED=1
 }
 
@@ -164,7 +178,7 @@ package_path() {
 	# `pi list` prints each package's source indented by two spaces, and the path it is installed at on the next line.
 	# It reads the source from settings, so the path is checked too: settings copied from another machine list
 	# packages whose files are not here.
-	path=$(pibolt list | awk -v src="  $1" 'found { sub(/^ +/, ""); print; exit } $0 == src { found = 1 }')
+	path=$(run_pi list | awk -v src="  $1" 'found { sub(/^ +/, ""); print; exit } $0 == src { found = 1 }')
 	if [ -n "$path" ] && [ -d "$path" ]; then printf '%s' "$path"; fi
 }
 
@@ -173,7 +187,7 @@ ensure_packages() {
 		if [ -n "$(package_path "$source")" ]; then continue; fi
 		case $source in git:*) command -v git >/dev/null 2>&1 || fail "git is needed to install $source" ;; esac
 		say "Installing $source"
-		pibolt install "$source"
+		run_pi install "$source"
 		CHANGED=1
 	done
 }
@@ -198,8 +212,8 @@ remove_gui_mcp_servers() {
 	for server in $GUI_MCP_SERVERS; do
 		grep -q "\"$server\"" "$mcp_json" || continue
 		say "Removing MCP server $server from $mcp_json: gui-subagents.ts runs it in subagents"
-		# Not through pibolt(): `mcp` commands reject --no-approve. Without --local, `mcp remove` edits the user-level file.
-		"$PIBOLT" mcp remove "$server" >/dev/null
+		# Not through run_pi(): `mcp` commands reject --no-approve. Without --local, `mcp remove` edits the user-level file.
+		"$PI" mcp remove "$server" >/dev/null
 		CHANGED=1
 	done
 }
@@ -232,13 +246,15 @@ run_dev_flows_install() {
 }
 
 [ "$(uname -s)" = Darwin ] || [ "$(uname -s)" = Linux ] || fail "only macOS and Linux are supported"
-command -v curl >/dev/null 2>&1 || fail "curl is needed"
+command -v bun >/dev/null 2>&1 || fail "Bun is needed: https://bun.sh"
 command -v jq >/dev/null 2>&1 || fail "jq is needed"
 
-ensure_pi_bolt
-uninstall_pi
-ensure_pi_link
+ensure_pi
+ensure_launcher
+remove_pi_bolt
+check_other_pis
 clear_pi_executable
+configure_npm_command
 ensure_packages
 configure_web_access
 remove_gui_mcp_servers
@@ -247,12 +263,12 @@ run_dev_flows_install
 
 hash -r 2>/dev/null || true
 found=$(command -v pi || true)
-[ "$found" = "$PI_LINK" ] || say "warning: \`pi\` runs ${found:-nothing}, not $PI_LINK: put $BIN_DIR first on PATH"
+[ "$found" = "$PI" ] || say "warning: \`pi\` runs ${found:-nothing}, not $PI: put ${PI%/*} first on PATH"
 
 if [ "$CHANGED" = 0 ]; then
 	# dev-flows-plugin's install script reports its own changes above.
-	say "pi is already set up: $("$PI_LINK" --version)"
+	say "pi is already set up: pi $("$PI" --version) at $PI"
 else
-	say "Done: $("$PI_LINK" --version)"
+	say "Done: pi $("$PI" --version) at $PI"
 	say "Restart apps that run pi (such as Zeron). Update with: pi update --all"
 fi
