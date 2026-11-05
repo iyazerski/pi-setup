@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
- * Add a one-line hint to a bash result when the command drifts from tool-routing.ts's list.
+ * Add a one-line hint to a tool result when the call drifts from tool-routing.ts's list.
  *
  * Rules in the system prompt alone didn't stop the habits: sessions still read files with sed -n and
  * edited them with Python scripts. A hint in the tool result lands right where the model decides its
@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * not the model, receives the nested result.
  */
 
-type HintKind = "edit" | "write" | "read" | "jq" | "sleep" | "batch";
+type HintKind = "edit" | "write" | "read" | "jq" | "sleep" | "batch" | "parallel";
 
 const HINTS: Record<HintKind, string> = {
 	edit: "Edit existing files with the `edit` tool, or `sd` for the same replacement in many places. Python and sed -i edits fail quietly when the text doesn't match.",
@@ -18,6 +18,7 @@ const HINTS: Record<HintKind, string> = {
 	read: "Read files with the `read` tool (offset/limit), or parallel `tools.read` calls in codemode.",
 	jq: "Use `jq` to read JSON, not a Python script.",
 	sleep: "Poll in one command with a bounded loop and a timeout, not with sleep across turns.",
+	parallel: "The file may not exist yet: calls in one message run in parallel. To read what another call creates, chain both in codemode.",
 	batch: "Several turns of lookups in a row: batch the next ones that don't need you to look in between into one codemode script.",
 };
 
@@ -98,6 +99,8 @@ export default function (pi: ExtensionAPI) {
 	let lookupTurns = 0;
 	// What this turn's direct calls were: none yet, only bash lookups, or anything else.
 	let turn: "none" | "lookup" | "other" = "none";
+	// Names of this turn's direct calls, which all come from one message and run in parallel.
+	const turnCalls = new Map<string, string>();
 	// Direct tool results so far, and the one each hint was last shown on.
 	let results = 0;
 	const shown = new Map<HintKind, number>();
@@ -108,6 +111,10 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("turn_start", () => {
 		turn = "none";
+		turnCalls.clear();
+	});
+	pi.on("tool_call", (event) => {
+		if (!event.parentToolCallId) turnCalls.set(event.toolCallId, event.toolName);
 	});
 	pi.on("turn_end", () => {
 		if (turn === "lookup") lookupTurns++;
@@ -118,6 +125,12 @@ export default function (pi: ExtensionAPI) {
 		const hints = new Set<HintKind>();
 		const command = event.toolName === "bash" && typeof event.input.command === "string" ? event.input.command : "";
 		if (command) for (const kind of commandHints(command)) hints.add(kind);
+		// A read that fails on a missing file, next to a call that may be creating it.
+		const siblings = [...turnCalls].filter(([id, name]) => id !== event.toolCallId && name !== "read");
+		if (event.toolName === "read" && !event.parentToolCallId && event.isError && siblings.length > 0) {
+			const text = event.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+			if (text.includes("ENOENT")) hints.add("parallel");
+		}
 
 		if (event.parentToolCallId) {
 			if (hints.size === 0) return;

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Message, Usage } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
@@ -26,7 +26,7 @@ import { Type } from "typebox";
  */
 
 const ROLE_ENV = "PI_GUI_SUBAGENT";
-// No provider prefix: pi picks a provider with credentials (OpenAI, LiteLLM, ...) that offers it.
+// No provider prefix: resolveModel() picks a provider with credentials (OpenAI, LiteLLM, ...) that offers it.
 const MODEL = process.env.PI_GUI_SUBAGENT_MODEL ?? "gpt-6.1-terra";
 const THINKING = process.env.PI_GUI_SUBAGENT_THINKING ?? "medium";
 // A stuck child keeps paying for tokens: stop it after this long.
@@ -204,6 +204,20 @@ function formatStats(details: RunDetails): string {
 		.join(" ");
 }
 
+/**
+ * Return MODEL as `provider/model`, picking a provider with credentials that offers it.
+ *
+ * A bare model ID fails in the child when more than one logged-in provider offers it (such as
+ * openai and openai-codex), so the parent picks one: the current model's provider when it offers
+ * the model, else the first. Without any match, the child reports the missing model itself.
+ */
+function resolveModel(ctx: ExtensionContext): string {
+	if (MODEL.includes("/")) return MODEL;
+	const matches = ctx.modelRegistry.getAvailable().filter((model) => model.id === MODEL);
+	const match = matches.find((model) => model.provider === ctx.model?.provider) ?? matches[0];
+	return match ? `${match.provider}/${match.id}` : MODEL;
+}
+
 /** Return the prefix pi gives the tools of an MCP server. */
 function toolPrefix(server: string): string {
 	return `mcp__${server.replace(/-/g, "_")}__`;
@@ -258,6 +272,7 @@ function setUpMain(pi: ExtensionAPI): void {
 			async execute(_toolCallId, { task }, signal, onUpdate, ctx) {
 				// One child session per main session and role, kept across calls.
 				const sessionId = `${ctx.sessionManager.getSessionId()}-${roleName}`;
+				const model = resolveModel(ctx);
 				const args = [
 					"--mode",
 					"json",
@@ -267,7 +282,7 @@ function setUpMain(pi: ExtensionAPI): void {
 					"--session-id",
 					sessionId,
 					"--model",
-					MODEL,
+					model,
 					"--thinking",
 					THINKING,
 					// Only this extension, MCP, and codemode: no other tools, skills, or prompt templates.
@@ -286,7 +301,7 @@ function setUpMain(pi: ExtensionAPI): void {
 					"--tools",
 					`codemode,${toolPrefix(role.server)}*`,
 				];
-				const details: RunDetails = { model: MODEL, steps: [], usage: emptyUsage(), sessionId, done: false };
+				const details: RunDetails = { model, steps: [], usage: emptyUsage(), sessionId, done: false };
 				const messages: Message[] = [];
 				let stderr = "";
 
