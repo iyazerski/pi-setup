@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * not the model, receives the nested result.
  */
 
-type HintKind = "edit" | "write" | "read" | "jq" | "sleep" | "batch" | "parallel";
+export type HintKind = "edit" | "write" | "read" | "jq" | "sleep" | "batch" | "parallel";
 
 const HINTS: Record<HintKind, string> = {
 	edit: "Edit existing files with the `edit` tool, or `sd` for the same replacement in many places. Python and sed -i edits fail quietly when the text doesn't match.",
@@ -54,7 +54,7 @@ const BATCH_AFTER_TURNS = 2;
 const HINT_COOLDOWN = 10;
 
 /** Split a command into its simple commands, at `;`, `&&`, `||`, newlines, and optionally pipes. */
-function segments(command: string, pipes: boolean): string[] {
+export function segments(command: string, pipes: boolean): string[] {
 	return command
 		.split(pipes ? /&&|\|\||[;\n|]/ : /&&|\|\||[;\n]/)
 		.map((part) => part.trim().replace(/^(\w+=\S*\s+)+/, ""))
@@ -71,7 +71,7 @@ function isLookup(command: string): boolean {
 }
 
 /** Return the hints a bash command deserves, apart from the batch hint. */
-function commandHints(command: string): HintKind[] {
+export function commandHints(command: string): HintKind[] {
 	const hints: HintKind[] = [];
 	if (SLEEPS.test(command) && !LOOPS.test(command)) hints.push("sleep");
 	// Only the part before the first remote command runs here.
