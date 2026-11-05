@@ -1,4 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 
 /**
  * Add a one-line hint to a tool result when the call drifts from tool-routing.ts's list.
@@ -10,7 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * not the model, receives the nested result.
  */
 
-export type HintKind = "edit" | "write" | "read" | "jq" | "sleep" | "batch" | "parallel";
+export type HintKind = "edit" | "write" | "read" | "jq" | "sleep" | "batch" | "parallel" | "uv";
 
 const HINTS: Record<HintKind, string> = {
 	edit: "Edit existing files with the `edit` tool, or `sd` for the same replacement in many places. Python and sed -i edits fail quietly when the text doesn't match.",
@@ -20,6 +23,7 @@ const HINTS: Record<HintKind, string> = {
 	sleep: "Poll in one command with a bounded loop and a timeout, not with sleep across turns.",
 	parallel: "The file may not exist yet: calls in one message run in parallel. To read what another call creates, chain both in codemode.",
 	batch: "Several turns of lookups in a row: batch the next ones that don't need you to look in between into one codemode script.",
+	uv: "This project uses uv: run Python tools with `uv run <tool>`, not by activating the venv or calling its `bin/` directly. Each bash call starts a fresh shell, and `uv run` syncs the environment first.",
 };
 
 const RUNS_SCRIPT = /\b(python3?|bun\s+-e|node\s+-e)\b/;
@@ -33,6 +37,10 @@ const EDITS_IN_PLACE = /\b(sed|perl)\s+(-\S+\s+)*-[a-zA-Z]*i/;
 // `cat > file <<EOF`, `cat <<EOF > file`, `tee file <<EOF`, but not into /dev/null.
 const HEREDOC_WRITE = /\b(cat\s*>>?\s*(?!\/dev\/)\S+\s*<<|cat\s+<<-?\s*\S+\s*>>?\s*(?!\/dev\/)\S|tee\s+(-a\s+)?(?!\/dev\/)\S+\s*<<)/;
 const PARSES_JSON = /\bjson\.loads?\(|-m\s+json\.tool\b/;
+// `source .venv/bin/activate`, `. venv/bin/activate`, `.venv/bin/pytest`, ...: group 1 is the path before the venv.
+const USES_VENV = /(?:^|[\s;&|(])(?:(?:source|\.)\s+)?((?:[^\s;&|()'"]*\/)?)\.?venv\/bin\/\w/;
+// A leading `cd dir &&` or `cd dir;`, which sets where the rest of the command runs.
+const LEADING_CD = /^\s*cd\s+([^\s;&|]+)\s*(?:&&|;)/;
 // Scripts that do more than reshape JSON, where jq is no replacement.
 const DOES_MORE = /\b(requests|urllib|http|subprocess|sqlite3|import\s+(?!json\b|sys\b)\w+)/;
 // A command that reads a file, first in its pipeline: a file argument, not stdin.
@@ -72,13 +80,40 @@ function isLookup(command: string): boolean {
 	);
 }
 
-/** Return the hints a bash command deserves, apart from the batch hint. */
+/** Return the part of a command before its first remote command, which is the only part that runs here. */
+function localPart(command: string): string {
+	const remote = command.search(REMOTE);
+	return remote < 0 ? command : command.slice(0, remote);
+}
+
+/** Resolve a shell path against a directory, expanding a leading `~`. */
+function resolvePath(base: string, path: string): string {
+	return resolve(base, path.replace(/^~(?=\/|$)/, homedir()));
+}
+
+/** Return whether a directory or one of its parents has a `uv.lock`. */
+function inUvProject(dir: string): boolean {
+	for (let current = dir; ; current = dirname(current)) {
+		if (existsSync(join(current, "uv.lock"))) return true;
+		if (dirname(current) === current) return false;
+	}
+}
+
+/** Return whether a command activates or calls a venv of a uv project, which `uv run` replaces. */
+export function usesVenvInUvProject(command: string, cwd: string): boolean {
+	const local = localPart(command);
+	const venv = USES_VENV.exec(local);
+	if (!venv) return false;
+	const cd = LEADING_CD.exec(local);
+	const base = cd ? resolvePath(cwd, cd[1]) : cwd;
+	return inUvProject(resolvePath(base, venv[1] || "."));
+}
+
+/** Return the hints a bash command deserves, apart from the batch and uv hints. */
 export function commandHints(command: string): HintKind[] {
 	const hints: HintKind[] = [];
 	if (SLEEPS.test(command) && !LOOPS.test(command)) hints.push("sleep");
-	// Only the part before the first remote command runs here.
-	const remote = command.search(REMOTE);
-	const local = remote < 0 ? command : command.slice(0, remote);
+	const local = localPart(command);
 	const script = RUNS_SCRIPT.test(local);
 	const writes = script && WRITES_FROM_SCRIPT.test(local);
 	const rewrites = writes && READS_FROM_SCRIPT.test(local) && CHANGES_TEXT.test(local);
@@ -123,10 +158,11 @@ export default function (pi: ExtensionAPI) {
 		else if (turn === "other") lookupTurns = 0;
 	});
 
-	pi.on("tool_result", (event) => {
+	pi.on("tool_result", (event, ctx) => {
 		const hints = new Set<HintKind>();
 		const command = event.toolName === "bash" && typeof event.input.command === "string" ? event.input.command : "";
 		if (command) for (const kind of commandHints(command)) hints.add(kind);
+		if (command && usesVenvInUvProject(command, ctx.cwd)) hints.add("uv");
 		// A read that fails on a missing file, next to a call that may be creating it.
 		const siblings = [...turnCalls].filter(([id, name]) => id !== event.toolCallId && name !== "read");
 		if (event.toolName === "read" && !event.parentToolCallId && event.isError && siblings.length > 0) {
