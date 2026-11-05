@@ -41,6 +41,8 @@ const SLEEPS = /(^|[;&|\n(]\s*)sleep\s+\d/;
 // Commands that run on another machine, where `read`, `edit`, and jq may not reach.
 const REMOTE = /\b(ssh|docker\s+(exec|run)|kubectl\s+exec|adb\s+shell)\b/;
 const LOOPS = /\b(while|until|for)\b/;
+// Loops and conditionals, where a file read is one step of shell logic that `read` can't replace.
+const CONTROL_FLOW = /\b(while|until|for|then|else)\b/;
 // Commands that only look things up, for counting turns of lookups in a row.
 const LOOKUP_COMMANDS = new Set([
 	"rg", "fd", "ls", "cat", "head", "tail", "sed", "nl", "wc", "jq", "tree", "pwd", "echo", "printf", "sort",
@@ -83,7 +85,7 @@ export function commandHints(command: string): HintKind[] {
 	if (rewrites || EDITS_IN_PLACE.test(local)) hints.push("edit");
 	else if (HEREDOC_WRITE.test(local)) hints.push("write");
 	if (script && !writes && PARSES_JSON.test(local) && !DOES_MORE.test(local)) hints.push("jq");
-	if (segments(local, false).some((part) => READS_FILE.test(part))) hints.push("read");
+	if (!CONTROL_FLOW.test(local) && segments(local, false).some((part) => READS_FILE.test(part))) hints.push("read");
 	return hints;
 }
 
