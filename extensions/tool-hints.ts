@@ -13,7 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 type HintKind = "edit" | "write" | "read" | "jq" | "sleep" | "batch";
 
 const HINTS: Record<HintKind, string> = {
-	edit: "Edit files with the `edit` tool, or `sd` for the same replacement in many places. Python and sed -i edits fail quietly when the text doesn't match.",
+	edit: "Edit existing files with the `edit` tool, or `sd` for the same replacement in many places. Python and sed -i edits fail quietly when the text doesn't match.",
 	write: "Create files with the `write` tool, not heredocs.",
 	read: "Read files with the `read` tool (offset/limit), or parallel `tools.read` calls in codemode.",
 	jq: "Use `jq` to read JSON, not a Python script.",
@@ -22,7 +22,11 @@ const HINTS: Record<HintKind, string> = {
 };
 
 const RUNS_SCRIPT = /\b(python3?|bun\s+-e|node\s+-e)\b/;
-const WRITES_FROM_SCRIPT = /\bwrite_text\(|\.write\(|\bopen\([^)]*,\s*["'][wa]|writeFileSync|Bun\.write\(/;
+// Writes to stdout or stderr print, so they don't count.
+const WRITES_FROM_SCRIPT = /\bwrite_text\(|(?<!\bsys\.std(out|err))\.write\(|\bopen\([^)]*,\s*["'][wa]|writeFileSync|Bun\.write\(/;
+// A script that reads a file and changes its text edits it, unlike one that only writes new output.
+const READS_FROM_SCRIPT = /\bread_text\(|\.read\(\)|readFileSync|Bun\.file\(/;
+const CHANGES_TEXT = /\.replace\(|\.subn?\(|\.index\(/;
 // sed -i, sed -Ei, perl -pi, ...
 const EDITS_IN_PLACE = /\b(sed|perl)\s+(-\S+\s+)*-[a-zA-Z]*i/;
 // `cat > file <<EOF`, `cat <<EOF > file`, `tee file <<EOF`, but not into /dev/null.
@@ -31,7 +35,7 @@ const PARSES_JSON = /\bjson\.loads?\(|-m\s+json\.tool\b/;
 // Scripts that do more than reshape JSON, where jq is no replacement.
 const DOES_MORE = /\b(requests|urllib|http|subprocess|sqlite3|import\s+(?!json\b|sys\b)\w+)/;
 // A command that reads a file, first in its pipeline: a file argument, not stdin.
-const READS_FILE = /^(cat\s+(?!<<)[^\s|<>-]|head\s|tail\s(?!.*\s-[a-zA-Z]*f)|sed\s+-n\s|nl\s)/;
+const READS_FILE = /^(cat\s+(?!<<)[^\s|<>-]|head\s|tail\s(?!(.*\s)?(-[a-zA-Z]*[fF]|--follow))|sed\s+-n\s|nl\s)/;
 const SLEEPS = /(^|[;&|\n(]\s*)sleep\s+\d/;
 // Commands that run on another machine, where `read`, `edit`, and jq may not reach.
 const REMOTE = /\b(ssh|docker\s+(exec|run)|kubectl\s+exec|adb\s+shell)\b/;
@@ -69,13 +73,16 @@ function isLookup(command: string): boolean {
 function commandHints(command: string): HintKind[] {
 	const hints: HintKind[] = [];
 	if (SLEEPS.test(command) && !LOOPS.test(command)) hints.push("sleep");
-	if (REMOTE.test(command)) return hints;
-	const script = RUNS_SCRIPT.test(command);
-	const writes = script && WRITES_FROM_SCRIPT.test(command);
-	if (writes || EDITS_IN_PLACE.test(command)) hints.push("edit");
-	else if (HEREDOC_WRITE.test(command)) hints.push("write");
-	if (script && !writes && PARSES_JSON.test(command) && !DOES_MORE.test(command)) hints.push("jq");
-	if (segments(command, false).some((part) => READS_FILE.test(part))) hints.push("read");
+	// Only the part before the first remote command runs here.
+	const remote = command.search(REMOTE);
+	const local = remote < 0 ? command : command.slice(0, remote);
+	const script = RUNS_SCRIPT.test(local);
+	const writes = script && WRITES_FROM_SCRIPT.test(local);
+	const rewrites = writes && READS_FROM_SCRIPT.test(local) && CHANGES_TEXT.test(local);
+	if (rewrites || EDITS_IN_PLACE.test(local)) hints.push("edit");
+	else if (HEREDOC_WRITE.test(local)) hints.push("write");
+	if (script && !writes && PARSES_JSON.test(local) && !DOES_MORE.test(local)) hints.push("jq");
+	if (segments(local, false).some((part) => READS_FILE.test(part))) hints.push("read");
 	return hints;
 }
 
